@@ -12,6 +12,7 @@ import numpy as np
 from pathlib import Path
 import pickle
 import hashlib
+from tqdm import tqdm
 from typing import Literal, Tuple, List, Optional
 
 
@@ -404,7 +405,7 @@ class EventStream:
             return t_current
 
         # 主循环：逐事件生成
-        while i < N:
+        for i in tqdm(range(N)):
             # 当前随机事件比例
             ratio_now = n_random / max(1, (n_random + n_pattern))
             # 决策：若当前比例 < 目标比例，则插入随机事件，否则插入模式
@@ -440,5 +441,5 @@ class EventStream:
 
     def stream(self):
         """流式迭代器：yield (timestamp:int, event_type:int)"""
-        for t, e in zip(self.timestamps, self.types):
-            yield int(t), int(e)
+        for t, e, p in zip(self.timestamps, self.types, self.is_pattern):
+            yield int(t), int(e), bool(p)
