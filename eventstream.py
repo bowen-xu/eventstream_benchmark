@@ -7,6 +7,8 @@
 #      - 可选：时间密度（rate）随时间变化，以及类型分布漂移（用于随机事件的类型分配）
 # 设计目标：高效（numpy 数组存储），流式可用，复现实验方便（seed）
 
+# Note: 该文件代码由LLM生成，尽管一些地方做了修改，但仍可能包含错误或不完善之处。须要进一步检查的修正。
+
 from __future__ import annotations
 import numpy as np
 from pathlib import Path
@@ -14,6 +16,7 @@ import pickle
 import hashlib
 from tqdm import tqdm
 from typing import Literal, Tuple, List, Optional
+import time
 
 
 JitterDist = Literal["none", "uniform", "gaussian", "laplace"]
@@ -158,6 +161,9 @@ class PatternSet:
     @property
     def length(self) -> int:
         return self.types.shape[1]
+    
+    def __len__(self) -> int:
+        return self.n_patterns
 
 
 def generate_patterns(
@@ -302,7 +308,14 @@ class EventStream:
             self.timestamps, self.types, self.is_pattern = self._generate_stream()
             if self.cache_path:
                 with open(self.cache_path, "wb") as f:
-                    pickle.dump({"timestamps": self.timestamps, "types": self.types, "is_pattern": self.is_pattern}, f)
+                    pickle.dump(
+                        {
+                            "timestamps": self.timestamps,
+                            "types": self.types,
+                            "is_pattern": self.is_pattern,
+                        },
+                        f,
+                    )
 
     # ------------------------ 核心生成 ------------------------
 
@@ -358,29 +371,30 @@ class EventStream:
             gap = max(1, int(round(base_int / r)))
             t_next = t_current + gap
 
-            p = _type_probs_with_drift(self.n_types, t_next, self.drift_mode)
-            et = int(rng.choice(self.n_types, p=p))
+            # p = _type_probs_with_drift(self.n_types, t_next, self.drift_mode)
+            et = int(rng.choice(self.n_types))
 
             timestamps[i] = t_next
             types[i] = et
             is_pattern[i] = False
-            i += 1
+            # i += 1
             n_random += 1
             return t_next
 
         # 辅助函数：插入一个完整模式实例
         def insert_pattern_instance(t_current: int) -> int:
             nonlocal i, n_pattern
+            idx = i
             pid = int(rng.integers(0, self.patterns.n_patterns))
             p_types = self.patterns.types[pid]
             p_gaps = self.patterns.gaps[pid]
             for j in range(L):
-                timestamps[i] = t_current
-                types[i] = p_types[j]
-                is_pattern[i] = True
-                i += 1
+                timestamps[idx] = t_current
+                types[idx] = p_types[j]
+                is_pattern[idx] = True
+                idx += 1
                 n_pattern += 1
-                if i >= N:
+                if idx >= N:
                     return t_current
                 if j < L - 1:
                     gap = int(p_gaps[j])
@@ -405,14 +419,21 @@ class EventStream:
             return t_current
 
         # 主循环：逐事件生成
-        for i in tqdm(range(N)):
-            # 当前随机事件比例
-            ratio_now = n_random / max(1, (n_random + n_pattern))
-            # 决策：若当前比例 < 目标比例，则插入随机事件，否则插入模式
-            if (ratio_now < self.random_ratio or n_pattern + L > target_pattern) and n_random < target_random:
-                t = insert_random_event(t)
-            else:
-                t = insert_pattern_instance(t)
+        with tqdm(total=N, desc="Generating events...") as pbar:
+            i = 0
+            while i < N:
+                # 当前随机事件比例
+                ratio_now = n_random / max(1, (n_random + n_pattern))
+                # 决策：若当前比例 < 目标比例，则插入随机事件，否则插入模式
+                if (
+                    ratio_now < self.random_ratio or n_pattern + L > target_pattern
+                ) and n_random < target_random:
+                    t = insert_random_event(t)
+                    i += 1
+                else:
+                    t = insert_pattern_instance(t)
+                    i += L
+                pbar.update(i - pbar.n)
 
         # 裁剪（防止越界）
         timestamps = timestamps[:N]
